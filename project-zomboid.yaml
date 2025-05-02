@@ -1,0 +1,407 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+  Project Zomboid dedicated server on ECS Fargate Spot + EFS.
+  Switch DesiredTaskCount between 0 and 1 to stop or start the server.
+  At each startup the task copies server-settings.ini from S3 to EFS.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: { default: "Game Server Settings" }
+        Parameters:
+          - ServerName
+          - AdminPassword
+          - MaxPlayers
+      - Label: { default: "Container Resource Limits" }
+        Parameters:
+          - ContainerCPU
+          - ContainerMemory
+      - Label: { default: "Operation" }
+        Parameters:
+          - DesiredTaskCount
+
+Parameters:
+  ServerName:
+    Type: String
+    Default: MyZomboidServer
+    Description: "Value passed to SERVER_NAME environment variable"
+  AdminPassword:
+    Type: String
+    NoEcho: true
+    Description: "Value passed to ADMIN_PASSWORD environment variable"
+  MaxPlayers:
+    Type: Number
+    Default: 16
+    Description: "Maximum number of players"
+  DesiredTaskCount:
+    Type: Number
+    AllowedValues: [0, 1]
+    Default: 0
+    Description: "1 = running, 0 = stopped"
+  ContainerCPU:
+    Type: Number
+    Default: 1024   # 1 vCPU
+    Description: "Fargate task CPU units"
+  ContainerMemory:
+    Type: Number
+    Default: 3072   # 3 GiB
+    Description: "Fargate task memory (MiB)"
+
+Resources:
+  # ---------- ネットワーク ----------
+  GameVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.42.0.0/16
+      EnableDnsHostnames: true
+      Tags: [{Key: Name, Value: !Sub "${AWS::StackName}-vpc"}]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  AttachIgw:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId:  !Ref GameVpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:            !Ref GameVpc
+      CidrBlock:        10.42.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags: [{Key: Name, Value: !Sub "${AWS::StackName}-pub-a"}]
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId:            !Ref GameVpc
+      CidrBlock:        10.42.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags: [{Key: Name, Value: !Sub "${AWS::StackName}-pub-b"}]
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref GameVpc
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId:         !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId:            !Ref InternetGateway
+  PublicSubnetARoute:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:     !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnetBRoute:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId:     !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  # ---------- Security Group ----------
+  GameSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Project Zomboid ports
+      VpcId: !Ref GameVpc
+      SecurityGroupIngress:
+        # Steam query port
+        - IpProtocol: udp
+          FromPort: 8766
+          ToPort: 8766
+          CidrIp: 0.0.0.0/0
+        # Game ports (clients)
+        - IpProtocol: udp
+          FromPort: 16261
+          ToPort: 16272
+          CidrIp: 0.0.0.0/0
+        # TCP client / health-check port range
+        - IpProtocol: tcp
+          FromPort: 16262
+          ToPort: 16272
+          CidrIp: 0.0.0.0/0
+
+  # Security group allowing NFS from ECS tasks to EFS mount targets
+  EfsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow NFS from ECS tasks
+      VpcId: !Ref GameVpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref GameSecurityGroup
+
+  # ---------- 永続データ EFS ----------
+  PzFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose
+  MountTargetA:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref PzFileSystem
+      SubnetId:     !Ref PublicSubnetA
+      SecurityGroups: [!GetAtt EfsSecurityGroup.GroupId]
+  MountTargetB:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref PzFileSystem
+      SubnetId:     !Ref PublicSubnetB
+      SecurityGroups: [!GetAtt EfsSecurityGroup.GroupId]
+
+  # ---------- S3 設定ファイル ----------
+  ConfigBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+
+  # ---------- IAM ----------
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: ReadConfigFromS3
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "${ConfigBucket.Arn}/*"
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ecs-tasks.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: EFSMount
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - elasticfilesystem:ClientMount
+                  - elasticfilesystem:ClientWrite
+                Resource: !GetAtt PzFileSystem.Arn
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:HeadObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::${ConfigBucket}"
+                  - !Sub "arn:aws:s3:::${ConfigBucket}/*"
+
+  # ---------- ECS ----------
+  PzCluster:
+    Type: AWS::ECS::Cluster
+
+  FargateSpotAssociation:
+    Type: AWS::ECS::ClusterCapacityProviderAssociations
+    Properties:
+      Cluster: !Ref PzCluster
+      CapacityProviders: [FARGATE_SPOT]
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE_SPOT
+          Weight: 1
+
+  PzTaskDef:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Cpu: !Ref ContainerCPU
+      Memory: !Ref ContainerMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      Volumes:
+        - Name: pzdata
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref PzFileSystem
+            TransitEncryption: ENABLED
+      ContainerDefinitions:
+        - Name: zomboid
+          Image: cm2network/steamcmd:latest
+          Essential: true
+          User: root
+          PortMappings:
+            - ContainerPort: 16261
+              Protocol: udp
+            - ContainerPort: 8766
+              Protocol: udp
+          Environment:
+            - Name: SERVER_NAME
+              Value: !Ref ServerName
+            - Name: ADMIN_PASSWORD
+              Value: !Ref AdminPassword
+            - Name: MAX_PLAYERS
+              Value: !Ref MaxPlayers
+            - Name: BUCKET_NAME
+              Value: !Ref ConfigBucket
+            - Name: CONFIG_URL
+              Value: !Sub "s3://${ConfigBucket}/pz-config/servertest.ini"
+          Command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              export HOME=/home/steam
+              mkdir -p "$HOME" "$HOME/Steam" || true
+              # Update / install the official server with SteamCMD (app ID 380870)
+              echo "Running SteamCMD to install/update Project Zomboid dedicated server..."
+              /home/steam/steamcmd/steamcmd.sh +login anonymous \
+                       +force_install_dir /home/steam/pzserver \
+                       +app_update 380870 validate \
+                       +quit
+
+              echo "Installing AWS CLI and required libs..."
+              apt-get update && apt-get install -y awscli screen lib32gcc-s1 lib32stdc++6 libnss3 || true
+
+              echo "Fetching server settings from S3 (if exists)..."
+              mkdir -p /home/steam/Zomboid/Server /home/steam/Zomboid/Logs || true
+              CONFIG_BASE="s3://$BUCKET_NAME/pz-config"
+              
+              # Get main server config and rename to $SERVER_NAME.ini
+              echo "Downloading server settings and renaming to $SERVER_NAME.ini, etc..."
+              aws s3 cp "$CONFIG_BASE/servertest.ini" "/home/steam/Zomboid/Server/$SERVER_NAME.ini" || echo "No servertest.ini found in S3"
+              
+              # Get additional Lua config files with server name in filename
+              aws s3 cp "$CONFIG_BASE/servertest_SandboxVars.lua" "/home/steam/Zomboid/Server/${SERVER_NAME}_SandboxVars.lua" || echo "No servertest_SandboxVars.lua found in S3"
+              aws s3 cp "$CONFIG_BASE/servertest_spawnpoints.lua" "/home/steam/Zomboid/Server/${SERVER_NAME}_spawnpoints.lua" || echo "No servertest_spawnpoints.lua found in S3"
+              aws s3 cp "$CONFIG_BASE/servertest_spawnregions.lua" "/home/steam/Zomboid/Server/${SERVER_NAME}_spawnregions.lua" || echo "No servertest_spawnregions.lua found in S3"
+
+              # Ensure ownership so that the steam user can write to EFS
+              chown -R steam:steam /home/steam/Zomboid /home/steam/pzserver || true
+
+              echo "Starting Project Zomboid server as steam user..."
+              su - steam -c "/home/steam/pzserver/start-server.sh -servername \"$SERVER_NAME\" -adminpassword \"$ADMIN_PASSWORD\" -maxplayers \"$MAX_PLAYERS\""
+          MountPoints:
+            - SourceVolume: pzdata
+              ContainerPath: /home/steam/Zomboid
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ZomboidLogGroup
+              awslogs-region: !Ref "AWS::Region"
+              awslogs-stream-prefix: zomboid
+
+        # Sidecar container that simply keeps TCP 16262 open so that the NLB health check succeeds.
+        - Name: health-listener
+          Image: alpine:3.19
+          Essential: false
+          Command:
+            - /bin/sh
+            - -c
+            - |
+              apk add --no-cache socat
+              echo "Health listener started on 16262";
+              socat TCP-LISTEN:16262,reuseaddr,fork -
+          PortMappings:
+            - ContainerPort: 16262
+              Protocol: tcp
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ZomboidLogGroup
+              awslogs-region: !Ref "AWS::Region"
+              awslogs-stream-prefix: health
+
+  # ---------- NLB（UDP 16261） ----------
+  GameNlb:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Type: network
+      Scheme: internet-facing
+      Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+      LoadBalancerAttributes:
+        - Key: load_balancing.cross_zone.enabled
+          Value: "true"
+
+  GameTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: 16261
+      Protocol: UDP
+      TargetType: ip
+      VpcId: !Ref GameVpc
+      HealthCheckEnabled: true
+      HealthCheckProtocol: TCP  # UDP target groups require TCP/HTTP health checks
+      HealthCheckPort: "16262"
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+
+  GameListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref GameNlb
+      Port: 16261
+      Protocol: UDP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref GameTargetGroup
+
+  # ---------- サービス ----------
+  PzService:
+    Type: AWS::ECS::Service
+    DependsOn: [MountTargetA, MountTargetB, GameListener]
+    Properties:
+      Cluster: !Ref PzCluster
+      TaskDefinition: !Ref PzTaskDef
+      DesiredCount: !Ref DesiredTaskCount
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+          SecurityGroups: [!Ref GameSecurityGroup]
+      LoadBalancers:
+        - TargetGroupArn: !Ref GameTargetGroup
+          ContainerName: zomboid
+          ContainerPort: 16261
+
+  # ---------- CloudWatch Logs ----------
+  ZomboidLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${AWS::StackName}/zomboid"
+      RetentionInDays: 14
+
+Outputs:
+  GameNlbDnsName:
+    Description: "Connect address (UDP port 16261)"
+    Value: !GetAtt GameNlb.DNSName
+  ConfigBucketName:
+    Description: "Upload servertest.ini and *_SandboxVars.lua files to pz-config/ folder"
+    Value: !Ref ConfigBucket
+  EfsId:
+    Description: "Persistent world data EFS ID"
+    Value: !Ref PzFileSystem 
