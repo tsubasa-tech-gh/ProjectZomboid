@@ -323,10 +323,31 @@ Resources:
               echo "Starting Project Zomboid server as steam user..."
               # Calculate heap size based on container memory (use ~50% for initial and ~70% for max)
               MEMORY_MB=$CONTAINER_MEMORY
-              INIT_HEAP=$(( $MEMORY_MB / 2 ))
-              MAX_HEAP=$(( $MEMORY_MB * 7 / 10 ))
+              INIT_HEAP=$(( MEMORY_MB / 2 ))
+              MAX_HEAP=$(( MEMORY_MB * 7 / 10 ))
               echo "Container memory: ${MEMORY_MB}MB, Initial heap: ${INIT_HEAP}MB, Max heap: ${MAX_HEAP}MB"
-              su - steam -c "/home/steam/pzserver/start-server.sh -servername \"$SERVER_NAME\" -adminpassword \"$ADMIN_PASSWORD\" -maxplayers \"$MAX_PLAYERS\" -Xms${INIT_HEAP}m -Xmx${MAX_HEAP}m"
+              
+              # ------------------------------
+              # Apply container-based heap size to ProjectZomboid64.json
+              # ------------------------------
+              CONF=/home/steam/pzserver/ProjectZomboid64.json
+              echo "Updating JVM options in $CONF …"
+              if [ -f "$CONF" ]; then
+                sed -i -E \
+                  -e "s/\"-Xms[0-9]+[gGmM]?\"/\"-Xms${INIT_HEAP}m\"/" \
+                  -e "s/\"-Xmx[0-9]+[gGmM]?\"/\"-Xmx${MAX_HEAP}m\"/" \
+                  "$CONF"
+              else
+                echo "WARNING: $CONF not found; skip memory tuning"
+              fi
+              
+              # ------------------------------
+              # Start server process in foreground (exec)
+              # ------------------------------
+              exec su - steam -c "/home/steam/pzserver/start-server.sh \
+                -servername \"$SERVER_NAME\" \
+                -adminpassword \"$ADMIN_PASSWORD\" \
+                -maxplayers \"$MAX_PLAYERS\""
           MountPoints:
             - SourceVolume: pzdata
               ContainerPath: /home/steam/Zomboid
