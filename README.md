@@ -9,10 +9,20 @@ This CloudFormation template deploys a Project Zomboid dedicated server on AWS u
 
 ### Features
 
-- **Cost-effective**: Uses Fargate Spot to reduce costs
+- **Cost-effective**: Uses Fargate Spot to reduce costs by up to 70% compared to regular Fargate
+- **Dynamic infrastructure**: Automatically creates/deletes the Network Load Balancer when starting/stopping the server to minimize costs
 - **Persistent storage**: EFS ensures your game world data persists between server restarts
 - **Easy configuration**: Server settings stored in S3, easily updateable
 - **Simple operation**: Start/stop server by adjusting a single parameter
+- **No SSH required**: Fully managed solution that doesn't require direct server access
+
+### Why This Solution?
+
+This project was developed to provide a simple, cost-effective way to run a Project Zomboid server with friends without the hassle of managing a dedicated server or dealing with SSH. Key benefits:
+
+- **Low maintenance**: No need to SSH into the server for updates or management
+- **Cost optimization**: Only pay for what you use - server resources when playing, minimal costs when idle
+- **Easy to use**: Simple CloudFormation parameters for controlling the server
 
 ### Prerequisites
 
@@ -48,6 +58,10 @@ This CloudFormation template deploys a Project Zomboid dedicated server on AWS u
    - Go to CloudFormation > Stacks > Your stack > Update
    - Change `DesiredTaskCount` from 0 to 1
    - Update stack
+   - **Note:** Server startup takes approximately 10 minutes as it needs to:
+     - Pull the Docker image
+     - Download the latest Project Zomboid server files using SteamCMD
+     - Configure and start the server
 
 ### Connecting to the Server
 
@@ -72,6 +86,15 @@ This CloudFormation template deploys a Project Zomboid dedicated server on AWS u
 - Go to CloudFormation > Stacks > Your stack > Update
 - Change `DesiredTaskCount` from 1 to 0
 - Update stack
+- **Note:** This will automatically terminate the ECS task and delete the Network Load Balancer to save costs
+
+### Cost Optimization
+
+This solution implements several cost-saving measures:
+
+1. **Fargate Spot** instances offer up to 70% discount over regular Fargate pricing
+2. **Dynamic NLB provisioning** - The Network Load Balancer (which has an hourly cost) is only created when the server is running
+3. **Zero-cost when stopped** - When the server is stopped, you only pay for the EFS storage containing your game data
 
 ### Troubleshooting
 
@@ -80,6 +103,7 @@ This CloudFormation template deploys a Project Zomboid dedicated server on AWS u
    - You can view logs in AWS Console: CloudWatch > Log groups > `/ecs/[StackName]/zomboid`
 - **Can't connect**: Verify your security group allows the required ports (UDP 16261-16272, TCP 16262-16272)
 - **Configuration not applied**: Make sure your config files are in the correct S3 location
+- **Slow server startup**: The initial startup takes approximately 10 minutes as the server needs to download and configure the game files
 
 ---
 
@@ -90,10 +114,20 @@ This CloudFormation template deploys a Project Zomboid dedicated server on AWS u
 
 ### 特徴
 
-- **コスト効率**: Fargate Spotを使用してコストを削減
+- **コスト効率**: Fargate Spotを使用して通常のFargateと比較して最大70%のコスト削減
+- **動的インフラストラクチャ**: サーバーの起動/停止時にNetwork Load Balancerを自動的に作成/削除してコストを最小化
 - **永続ストレージ**: EFSによりサーバー再起動間もゲームワールドデータが保持される
 - **簡単な構成**: サーバー設定はS3に保存され、簡単に更新可能
 - **シンプルな操作**: 1つのパラメータを調整するだけでサーバーの起動/停止が可能
+- **SSH不要**: サーバーに直接アクセスする必要のない完全管理型ソリューション
+
+### このソリューションを選ぶ理由
+
+このプロジェクトは、専用サーバーの管理やSSHの扱いに悩まされることなく、友人とProject Zomboidサーバーを簡単かつコスト効率よく運用するために開発されました。主なメリット：
+
+- **低メンテナンス**: 更新や管理のためにサーバーにSSHする必要なし
+- **コスト最適化**: 使用した分だけ支払い - プレイ中はサーバーリソース、アイドル時は最小限のコスト
+- **使いやすさ**: サーバーを制御するためのシンプルなCloudFormationパラメータ
 
 ### 前提条件
 
@@ -129,6 +163,10 @@ This CloudFormation template deploys a Project Zomboid dedicated server on AWS u
    - CloudFormation > スタック > あなたのスタック > 更新に移動
    - `DesiredTaskCount`を0から1に変更
    - スタックを更新
+   - **注意:** サーバーの起動には約10分かかります。これは以下の処理が必要なためです：
+     - Dockerイメージのプル
+     - SteamCMDを使用した最新のProject Zomboidサーバーファイルのダウンロード
+     - サーバーの設定と起動
 
 ### サーバーへの接続
 
@@ -153,6 +191,15 @@ This CloudFormation template deploys a Project Zomboid dedicated server on AWS u
 - CloudFormation > スタック > あなたのスタック > 更新に移動
 - `DesiredTaskCount`を1から0に変更
 - スタックを更新
+- **注意:** これによりECSタスクが自動的に終了し、コスト削減のためにNetwork Load Balancerが削除されます
+
+### コスト最適化
+
+このソリューションはいくつかのコスト削減対策を実装しています：
+
+1. **Fargate Spot**インスタンスは通常のFargate料金と比較して最大70%の割引を提供
+2. **動的NLBプロビジョニング** - Network Load Balancer（時間単位のコストがかかる）はサーバー稼働時のみ作成
+3. **停止時のゼロコスト** - サーバー停止時はゲームデータを含むEFSストレージのみ課金
 
 ### トラブルシューティング
 
@@ -161,5 +208,6 @@ This CloudFormation template deploys a Project Zomboid dedicated server on AWS u
    - AWSコンソールで確認可能: CloudWatch > ロググループ > `/ecs/[スタック名]/zomboid`
 - **接続できない**: セキュリティグループが必要なポート（UDP 16261-16272、TCP 16262-16272）を許可していることを確認
 - **設定が適用されない**: 設定ファイルが正しいS3の場所にあることを確認
+- **サーバーの起動が遅い**: 初回起動は約10分かかります。サーバーがゲームファイルをダウンロードして設定する必要があるためです
 
 ---
