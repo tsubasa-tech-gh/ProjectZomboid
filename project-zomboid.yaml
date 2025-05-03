@@ -285,6 +285,8 @@ Resources:
               Value: !Ref ConfigBucket
             - Name: CONFIG_URL
               Value: !Sub "s3://${ConfigBucket}/pz-config/servertest.ini"
+            - Name: CONTAINER_MEMORY
+              Value: !Ref ContainerMemory
           Command:
             - /bin/sh
             - -c
@@ -319,7 +321,12 @@ Resources:
               chown -R steam:steam /home/steam/Zomboid /home/steam/pzserver || true
 
               echo "Starting Project Zomboid server as steam user..."
-              su - steam -c "/home/steam/pzserver/start-server.sh -servername \"$SERVER_NAME\" -adminpassword \"$ADMIN_PASSWORD\" -maxplayers \"$MAX_PLAYERS\""
+              # Calculate heap size based on container memory (use ~50% for initial and ~70% for max)
+              MEMORY_MB=$CONTAINER_MEMORY
+              INIT_HEAP=$(( $MEMORY_MB / 2 ))
+              MAX_HEAP=$(( $MEMORY_MB * 7 / 10 ))
+              echo "Container memory: ${MEMORY_MB}MB, Initial heap: ${INIT_HEAP}MB, Max heap: ${MAX_HEAP}MB"
+              su - steam -c "/home/steam/pzserver/start-server.sh -servername \"$SERVER_NAME\" -adminpassword \"$ADMIN_PASSWORD\" -maxplayers \"$MAX_PLAYERS\" -Xms${INIT_HEAP}m -Xmx${MAX_HEAP}m"
           MountPoints:
             - SourceVolume: pzdata
               ContainerPath: /home/steam/Zomboid
