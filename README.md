@@ -16,9 +16,9 @@ This CloudFormation template deploys a Project Zomboid dedicated server on AWS u
 - **Simple operation**: Start/stop server by adjusting a single parameter
 - **No SSH required**: Fully managed solution that doesn't require direct server access
 
-### Why This Solution?
+### Why I Developed This Solution
 
-This project was developed to provide a simple, cost-effective way to run a Project Zomboid server with friends without the hassle of managing a dedicated server or dealing with SSH. Key benefits:
+I developed this project to provide a simple, cost-effective way to run a Project Zomboid server with friends without the hassle of managing a dedicated server or dealing with SSH. Key benefits:
 
 - **Low maintenance**: No need to SSH into the server for updates or management
 - **Cost optimization**: Only pay for what you use - server resources when playing, minimal costs when idle
@@ -66,6 +66,7 @@ This project was developed to provide a simple, cost-effective way to run a Proj
 ### Connecting to the Server
 
 - Get the server address from the CloudFormation stack outputs (`GameNlbDnsName`)
+- **Important:** This DNS name changes each time you restart the server (stop and start) since the NLB is recreated
 - Use the admin password you specified in the CloudFormation parameters
 - In Project Zomboid, add a server with this address
 - Default port: 16261/UDP
@@ -96,12 +97,24 @@ This solution implements several cost-saving measures:
 2. **Dynamic NLB provisioning** - The Network Load Balancer (which has an hourly cost) is only created when the server is running
 3. **Zero-cost when stopped** - When the server is stopped, you only pay for the EFS storage containing your game data
 
+### Required Ports
+
+Project Zomboid uses several ports for different functions:
+
+- **UDP 16261**: Main game connection port
+- **TCP 16261-16293**: Game data and status information
+- **UDP/TCP 8766-8767**: Steam query ports for server browser
+- **TCP 27015**: RCON port
+- **UDP 27015, 27031-27036**: Additional Steam communication ports
+
+All these ports are automatically configured in the CloudFormation template.
+
 ### Troubleshooting
 
 - **Server doesn't start**: Check the ECS task logs in CloudWatch
    - Logs are automatically collected in CloudWatch under `/ecs/[StackName]/zomboid`
    - You can view logs in AWS Console: CloudWatch > Log groups > `/ecs/[StackName]/zomboid`
-- **Can't connect**: Verify your security group allows the required ports (UDP 16261-16272, TCP 16262-16272)
+- **Can't connect**: Verify you're using the correct and current `GameNlbDnsName` from the stack outputs
 - **Configuration not applied**: Make sure your config files are in the correct S3 location
 - **Slow server startup**: The initial startup takes approximately 10 minutes as the server needs to download and configure the game files
 
@@ -121,9 +134,9 @@ This solution implements several cost-saving measures:
 - **シンプルな操作**: 1つのパラメータを調整するだけでサーバーの起動/停止が可能
 - **SSH不要**: サーバーに直接アクセスする必要のない完全管理型ソリューション
 
-### このソリューションを選ぶ理由
+### このソリューションを開発した理由
 
-このプロジェクトは、専用サーバーの管理やSSHの扱いに悩まされることなく、友人とProject Zomboidサーバーを簡単かつコスト効率よく運用するために開発されました。主なメリット：
+私は専用サーバーの管理やSSHの扱いに悩まされることなく、友人とProject Zomboidサーバーを簡単かつコスト効率よく運用するためにこのプロジェクトを開発しました。主なメリット：
 
 - **低メンテナンス**: 更新や管理のためにサーバーにSSHする必要なし
 - **コスト最適化**: 使用した分だけ支払い - プレイ中はサーバーリソース、アイドル時は最小限のコスト
@@ -171,6 +184,7 @@ This solution implements several cost-saving measures:
 ### サーバーへの接続
 
 - CloudFormationスタックの出力から、サーバーアドレス（`GameNlbDnsName`）を取得
+- **重要:** このDNS名はサーバーの再起動（停止と起動）のたびに変更されます。これはNLBが毎回再作成されるためです
 - CloudFormationパラメータで指定した管理者パスワードを使用
 - Project Zomboid内で、このアドレスでサーバーを追加
 - デフォルトポート: 16261/UDP
@@ -201,12 +215,24 @@ This solution implements several cost-saving measures:
 2. **動的NLBプロビジョニング** - Network Load Balancer（時間単位のコストがかかる）はサーバー稼働時のみ作成
 3. **停止時のゼロコスト** - サーバー停止時はゲームデータを含むEFSストレージのみ課金
 
+### 必要なポート
+
+Project Zomboidは様々な機能のために複数のポートを使用します：
+
+- **UDP 16261**: メインゲーム接続ポート
+- **TCP 16261-16293**: ゲームデータとステータス情報
+- **UDP/TCP 8766-8767**: サーバーブラウザ用のSteamクエリポート
+- **TCP 27015**: RCONポート
+- **UDP 27015, 27031-27036**: Steamの追加通信ポート
+
+これらのポートはすべてCloudFormationテンプレートで自動的に設定されます。
+
 ### トラブルシューティング
 
 - **サーバーが起動しない**: CloudWatchでECSタスクログを確認
    - ログは自動的にCloudWatchの `/ecs/[スタック名]/zomboid` に収集されます
    - AWSコンソールで確認可能: CloudWatch > ロググループ > `/ecs/[スタック名]/zomboid`
-- **接続できない**: セキュリティグループが必要なポート（UDP 16261-16272、TCP 16262-16272）を許可していることを確認
+- **接続できない**: スタック出力から正しい最新の`GameNlbDnsName`を使用していることを確認
 - **設定が適用されない**: 設定ファイルが正しいS3の場所にあることを確認
 - **サーバーの起動が遅い**: 初回起動は約10分かかります。サーバーがゲームファイルをダウンロードして設定する必要があるためです
 
