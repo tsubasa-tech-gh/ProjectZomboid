@@ -99,15 +99,26 @@ This solution implements several cost-saving measures:
 
 ### Required Ports
 
-Project Zomboid uses several ports for different functions:
+Project Zomboid server requires the following ports:
 
-- **UDP 16261**: Main game connection port
-- **TCP 16261-16293**: Game data and status information
-- **UDP/TCP 8766-8767**: Steam query ports for server browser
-- **TCP 27015**: RCON port
-- **UDP 27015, 27031-27036**: Additional Steam communication ports
+- **UDP 16261-16262**: Main game connection ports
+  - 16261: Primary game communication
+  - 16262: Game status and health check port
+- **UDP 8766-8767**: Steam query ports for server browser and listing
+- **TCP 27015**: RCON (Remote Console) - used for remote server administration
 
-All these ports are automatically configured in the CloudFormation template.
+This CloudFormation template is optimized to open only these essential ports, enhancing security while ensuring full functionality.
+
+### Accessing RCON
+
+To manage your server remotely, you can use RCON clients like `rcon-cli` to connect to your server on TCP port 27015. This allows for sending commands like `save` (to save the world) or `servermsg` (to broadcast messages to players) without requiring direct server access.
+
+Example RCON connection using `rcon-cli`:
+```
+rcon -a your_server_dns:27015 -p your_rcon_password "servermsg \"Server will restart in 5 minutes\""
+```
+
+You'll need to set your RCON password in your server configuration file (`servertest.ini`) before uploading it to the S3 bucket.
 
 ### Troubleshooting
 
@@ -217,17 +228,28 @@ All these ports are automatically configured in the CloudFormation template.
 
 ### 必要なポート
 
-Project Zomboidは様々な機能のために複数のポートを使用します：
+Project Zomboidサーバーには以下のポートが必要です：
 
-- **UDP 16261**: メインゲーム接続ポート
-- **TCP 16261-16293**: ゲームデータとステータス情報
-- **UDP/TCP 8766-8767**: サーバーブラウザ用のSteamクエリポート
-- **TCP 27015**: RCONポート
-- **UDP 27015, 27031-27036**: Steamの追加通信ポート
+- **UDP 16261-16262**: メインゲーム接続ポート
+  - 16261: 主要なゲーム通信
+  - 16262: ゲームステータスとヘルスチェック用ポート
+- **UDP 8766-8767**: Steamクエリポート（サーバーブラウザとリスティング用）
+- **TCP 27015**: RCON（リモートコンソール）- リモートサーバー管理に使用
 
-これらのポートはすべてCloudFormationテンプレートで自動的に設定されます。
+このCloudFormationテンプレートは、これらの必須ポートのみを開放するように最適化されており、セキュリティを強化しつつ完全な機能性を確保しています。
 
-### トラブルシューティング
+### RCONへのアクセス
+
+サーバーをリモートで管理するには、`rcon-cli`などのRCONクライアントを使用してTCPポート27015経由でサーバーに接続できます。これにより、サーバーに直接アクセスすることなく、`save`（ワールドを保存）や`servermsg`（プレイヤーにメッセージをブロードキャスト）などのコマンドを送信できます。
+
+`rcon-cli`を使用したRCON接続の例：
+```
+rcon -a サーバーのDNS:27015 -p RCONパスワード "servermsg \"サーバーは5分後に再起動します\""
+```
+
+RCONパスワードは、S3バケットにアップロードする前にサーバー設定ファイル（`servertest.ini`）で設定する必要があります。
+
+### Troubleshooting
 
 - **サーバーが起動しない**: CloudWatchでECSタスクログを確認
    - ログは自動的にCloudWatchの `/ecs/[スタック名]/zomboid` に収集されます
