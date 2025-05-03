@@ -115,43 +115,25 @@ Resources:
       GroupDescription: Project Zomboid ports
       VpcId: !Ref GameVpc
       SecurityGroupIngress:
-        # Steam query ports
+        # Health check port (TCP)
+        - IpProtocol: tcp
+          FromPort: 16262
+          ToPort: 16262
+          CidrIp: 0.0.0.0/0
+        # Steam query ports (optional but useful for server browser)
         - IpProtocol: udp
           FromPort: 8766
           ToPort: 8767
           CidrIp: 0.0.0.0/0
-        # TCP Steam query ports
-        - IpProtocol: tcp
-          FromPort: 8766
-          ToPort: 8767
-          CidrIp: 0.0.0.0/0
-        # Game ports (UDP)
+        # Main game ports
         - IpProtocol: udp
           FromPort: 16261
-          ToPort: 16272
-          CidrIp: 0.0.0.0/0
-        # Game ports (TCP)
-        - IpProtocol: tcp
-          FromPort: 16261
-          ToPort: 16293
+          ToPort: 16262
           CidrIp: 0.0.0.0/0
         # RCON port
         - IpProtocol: tcp
           FromPort: 27015
           ToPort: 27015
-          CidrIp: 0.0.0.0/0
-        # Steam ports
-        - IpProtocol: tcp
-          FromPort: 27036
-          ToPort: 27036
-          CidrIp: 0.0.0.0/0
-        - IpProtocol: udp
-          FromPort: 27015
-          ToPort: 27015
-          CidrIp: 0.0.0.0/0
-        - IpProtocol: udp
-          FromPort: 27031
-          ToPort: 27036
           CidrIp: 0.0.0.0/0
 
   # Security group allowing NFS from ECS tasks to EFS mount targets
@@ -279,42 +261,19 @@ Resources:
           Essential: true
           User: root
           PortMappings:
-            # Game UDP ports
+            # Main game ports
             - ContainerPort: 16261
               Protocol: udp
-            # Steam query UDP ports
-            - ContainerPort: 8766
-              Protocol: udp
-            - ContainerPort: 8767
-              Protocol: udp
-            # Game TCP ports
-            - ContainerPort: 16261
-              Protocol: tcp
             - ContainerPort: 16262
-              Protocol: tcp
-            # Steam query TCP ports
+              Protocol: udp
+            # Steam query ports
             - ContainerPort: 8766
-              Protocol: tcp
+              Protocol: udp
             - ContainerPort: 8767
-              Protocol: tcp
+              Protocol: udp
             # RCON port
             - ContainerPort: 27015
               Protocol: tcp
-            # Additional Steam UDP ports
-            - ContainerPort: 27015
-              Protocol: udp
-            - ContainerPort: 27031
-              Protocol: udp
-            - ContainerPort: 27032
-              Protocol: udp
-            - ContainerPort: 27033
-              Protocol: udp
-            - ContainerPort: 27034
-              Protocol: udp
-            - ContainerPort: 27035
-              Protocol: udp
-            - ContainerPort: 27036
-              Protocol: udp
           Environment:
             - Name: SERVER_NAME
               Value: !Ref ServerName
@@ -371,17 +330,27 @@ Resources:
               awslogs-region: !Ref "AWS::Region"
               awslogs-stream-prefix: zomboid
 
-        # Sidecar container that keeps TCP 16262 open for NLB health check
+        # Dedicated health check sidecar container
         - Name: health-listener
-          Image: alpine:3.19
-          Essential: false
+          Image: alpine:latest
+          Essential: true
           Command:
             - /bin/sh
             - -c
             - |
+              # Install necessary tools
               apk add --no-cache socat
-              echo "Health listener started on 16262";
-              socat TCP-LISTEN:16262,reuseaddr,fork -
+              
+              # Start health check listener on TCP port 16262
+              echo "Starting dedicated health check listener on port 16262..."
+              # Use a simple HTTP response instead of just ECHO to be more compatible with NLB health checks
+              socat TCP-LISTEN:16262,fork,reuseaddr,bind=0.0.0.0 SYSTEM:'echo -e "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK"' &
+              
+              # Keep container running and log status periodically
+              while true; do
+                echo "Health check listener is running on port 16262..."
+                sleep 30
+              done
           PortMappings:
             - ContainerPort: 16262
               Protocol: tcp
@@ -414,29 +383,12 @@ Resources:
       TargetType: ip
       VpcId: !Ref GameVpc
       HealthCheckEnabled: true
-      HealthCheckProtocol: TCP  # UDP target groups require TCP/HTTP health checks
+      HealthCheckProtocol: TCP  # UDP health checks not supported, must use TCP
       HealthCheckPort: "16262"
-      HealthCheckIntervalSeconds: 30
-      HealthCheckTimeoutSeconds: 10
+      HealthCheckIntervalSeconds: 60
+      HealthCheckTimeoutSeconds: 30
       HealthyThresholdCount: 2
-      UnhealthyThresholdCount: 2
-
-  # Game client connection (TCP)
-  GameTcpTargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    Condition: CreateNLB
-    Properties:
-      Port: 16261
-      Protocol: TCP
-      TargetType: ip
-      VpcId: !Ref GameVpc
-      HealthCheckEnabled: true
-      HealthCheckProtocol: TCP
-      HealthCheckPort: "16262"
-      HealthCheckIntervalSeconds: 30
-      HealthCheckTimeoutSeconds: 10
-      HealthyThresholdCount: 2
-      UnhealthyThresholdCount: 2
+      UnhealthyThresholdCount: 5
 
   # Steam query port for server status (UDP)
   SteamQueryTargetGroup:
@@ -450,27 +402,10 @@ Resources:
       HealthCheckEnabled: true
       HealthCheckProtocol: TCP
       HealthCheckPort: "16262"
-      HealthCheckIntervalSeconds: 30
-      HealthCheckTimeoutSeconds: 10
+      HealthCheckIntervalSeconds: 60
+      HealthCheckTimeoutSeconds: 30
       HealthyThresholdCount: 2
-      UnhealthyThresholdCount: 2
-
-  # Steam query port for server status (TCP)
-  SteamQueryTcpTargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    Condition: CreateNLB
-    Properties:
-      Port: 8766
-      Protocol: TCP
-      TargetType: ip
-      VpcId: !Ref GameVpc
-      HealthCheckEnabled: true
-      HealthCheckProtocol: TCP
-      HealthCheckPort: "16262"
-      HealthCheckIntervalSeconds: 30
-      HealthCheckTimeoutSeconds: 10
-      HealthyThresholdCount: 2
-      UnhealthyThresholdCount: 2
+      UnhealthyThresholdCount: 5
 
   # Secondary Steam query port
   SteamQueryTargetGroup2:
@@ -484,10 +419,10 @@ Resources:
       HealthCheckEnabled: true
       HealthCheckProtocol: TCP
       HealthCheckPort: "16262"
-      HealthCheckIntervalSeconds: 30
-      HealthCheckTimeoutSeconds: 10
+      HealthCheckIntervalSeconds: 60
+      HealthCheckTimeoutSeconds: 30
       HealthyThresholdCount: 2
-      UnhealthyThresholdCount: 2
+      UnhealthyThresholdCount: 5
 
   # RCON port target group
   RconTargetGroup:
@@ -501,10 +436,10 @@ Resources:
       HealthCheckEnabled: true
       HealthCheckProtocol: TCP
       HealthCheckPort: "16262"
-      HealthCheckIntervalSeconds: 30
-      HealthCheckTimeoutSeconds: 10
+      HealthCheckIntervalSeconds: 60
+      HealthCheckTimeoutSeconds: 30
       HealthyThresholdCount: 2
-      UnhealthyThresholdCount: 2
+      UnhealthyThresholdCount: 5
 
   GameListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -517,17 +452,6 @@ Resources:
         - Type: forward
           TargetGroupArn: !Ref GameTargetGroup
 
-  GameTcpListener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    Condition: CreateNLB
-    Properties:
-      LoadBalancerArn: !Ref GameNlb
-      Port: 16261
-      Protocol: TCP
-      DefaultActions:
-        - Type: forward
-          TargetGroupArn: !Ref GameTcpTargetGroup
-
   SteamQueryListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Condition: CreateNLB
@@ -538,17 +462,6 @@ Resources:
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref SteamQueryTargetGroup
-
-  SteamQueryTcpListener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    Condition: CreateNLB
-    Properties:
-      LoadBalancerArn: !Ref GameNlb
-      Port: 8766
-      Protocol: TCP
-      DefaultActions:
-        - Type: forward
-          TargetGroupArn: !Ref SteamQueryTcpTargetGroup
 
   SteamQueryListener2:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -577,7 +490,7 @@ Resources:
   PzServiceWithLb:
     Type: AWS::ECS::Service
     Condition: CreateNLB
-    DependsOn: [MountTargetA, MountTargetB, GameListener, GameTcpListener, SteamQueryListener, SteamQueryTcpListener, SteamQueryListener2, RconListener]
+    DependsOn: [MountTargetA, MountTargetB, GameListener, SteamQueryListener, SteamQueryListener2, RconListener]
     Properties:
       Cluster: !Ref PzCluster
       TaskDefinition: !Ref PzTaskDef
@@ -592,13 +505,7 @@ Resources:
         - TargetGroupArn: !Ref GameTargetGroup
           ContainerName: zomboid
           ContainerPort: 16261
-        - TargetGroupArn: !Ref GameTcpTargetGroup
-          ContainerName: zomboid
-          ContainerPort: 16261
         - TargetGroupArn: !Ref SteamQueryTargetGroup
-          ContainerName: zomboid
-          ContainerPort: 8766
-        - TargetGroupArn: !Ref SteamQueryTcpTargetGroup
           ContainerName: zomboid
           ContainerPort: 8766
         - TargetGroupArn: !Ref SteamQueryTargetGroup2
